@@ -1,9 +1,9 @@
 import streamlit as st
-import google.generativeai as genai
+import google.genai as genai
 from PIL import Image
 import io
 import os
-import time # To simulate loading if needed, or just for clarity
+import time # Optional: for potential future loading indicators
 
 # --- Configure Google Generative AI ---
 # Check for API key in Streamlit secrets or environment variables
@@ -51,7 +51,7 @@ model = get_generative_model()
 if "chat_session" not in st.session_state:
     st.session_state.chat_session = None
 
-# Initialize list to store messages for display (includes images)
+# Initialize list to store messages for display (includes images and file text)
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -97,7 +97,6 @@ def send_message_to_gemini(parts, system_instruction=None):
                  st.session_state.messages = [] # Clear display history
              else:
                  st.info("Starting new chat session.")
-
 
              # Start a new chat session with the current system instruction
              st.session_state.chat_session = model.start_chat(
@@ -180,7 +179,7 @@ with st.sidebar:
 
 # --- Main Chat Interface ---
 st.title("💬 Multimodal Gemini Chat")
-st.write("Upload images and enter text prompts to interact with Google's Gemini model.")
+st.write("Upload images or text files and enter text prompts to interact with Google's Gemini model.")
 
 # Display previous messages from session state
 for message in st.session_state.messages:
@@ -188,13 +187,13 @@ for message in st.session_state.messages:
 
 
 # --- User Input Area ---
-# File Uploader allows multiple image files
+# File Uploader allows multiple image and text files
 uploaded_files = st.file_uploader(
-    "🖼️ Upload images (optional)",
-    type=["png", "jpg", "jpeg", "webp"],
+    "🖼️ Upload images or 📄 text files (optional)",
+    type=["png", "jpg", "jpeg", "webp", "txt"], # Added 'txt'
     accept_multiple_files=True,
     key=st.session_state.uploader_key, # Use key to reset the widget
-    help="Upload images relevant to your question. Maximum file size per image might apply."
+    help="Upload images or text files relevant to your question. Content will be included in the prompt."
 )
 
 # Chat input for text prompt
@@ -202,47 +201,57 @@ prompt_text = st.chat_input("Enter your message here...")
 
 
 # Process user input when either text is entered or files are uploaded
-# Note: st.chat_input returns the prompt when submitted.
-# If only files are uploaded without text, the code block below won't execute
-# unless we add a check for uploaded_files state changing.
-# A simpler approach is to require text *or* files for submission.
-# Let's make the submission happen when prompt_text is entered, and include files if present.
-if prompt_text or uploaded_files: # Allow submitting with just files or just text or both
+if prompt_text or uploaded_files:
 
     # Prepare the user's message parts for display and sending to Gemini
     user_message_parts_for_display = []
-    image_parts_for_gemini = [] # Store PIL Images for the model
+    parts_for_gemini = [] # List to build parts for the API call
 
     # Process uploaded files first
     if uploaded_files:
         for uploaded_file in uploaded_files:
-            try:
-                # Open image file using Pillow
-                img = Image.open(uploaded_file)
-                user_message_parts_for_display.append(img) # Add image to parts for display
-                image_parts_for_gemini.append(img) # Add image to parts for Gemini API
-            except Exception as e:
-                st.error(f"Could not load image {uploaded_file.name}: {e}")
-                # Optionally, continue without this image or stop
+            file_type = uploaded_file.type
+            file_name = uploaded_file.name
 
+            try:
+                if file_type.startswith('image/'):
+                    # Handle images
+                    img = Image.open(uploaded_file)
+                    user_message_parts_for_display.append(img) # Add image for display
+                    parts_for_gemini.append(img) # Add PIL Image object for Gemini
+                elif file_type == 'text/plain':
+                    # Handle text files
+                    # Read content (decode using utf-8 is common for text files)
+                    file_content = uploaded_file.getvalue().decode('utf-8')
+                    # Add formatted text content for display
+                    user_message_parts_for_display.append(f"**Content of `{file_name}`:**\n\n```\n{file_content}\n```")
+                    # Add raw text content as a string part for Gemini
+                    # Optionally add filename/context before content for Gemini too:
+                    # parts_for_gemini.append(f"Content from file named {file_name}:\n")
+                    parts_for_gemini.append(file_content)
+
+                else:
+                    # Handle other potential file types if needed
+                    st.warning(f"Skipping unsupported file type: {file_name} ({file_type})")
+
+            except Exception as e:
+                st.error(f"Could not process file {file_name}: {e}")
+                # Continue processing other files
 
     # Add the text prompt if available
     if prompt_text:
-        user_message_parts_for_display.append(prompt_text) # Add text to parts for display
+        user_message_parts_for_display.append(prompt_text) # Add text for display
+        parts_for_gemini.append(prompt_text) # Add text for Gemini
 
 
     # --- Add user message to history and display ---
-    # Only add if there's *something* to send (text or images)
-    if user_message_parts_for_display:
-        # Add the user's message to the session state history
+    # Only add if there's *something* to send (text, images, or file content)
+    if parts_for_gemini: # Check if there's content prepared for Gemini
+        # Add the user's message (including processed file content) to the session state history
         st.session_state.messages.append({"role": "user", "parts": user_message_parts_for_display})
 
         # Display the user's message immediately
         display_message({"role": "user", "parts": user_message_parts_for_display})
-
-        # --- Prepare parts for Gemini API call ---
-        # The API expects images followed by text if both are present in a turn
-        parts_for_gemini = image_parts_for_gemini + ([prompt_text] if prompt_text else [])
 
         # --- Send message to Gemini and get response ---
         # Use a spinner while waiting for the response
@@ -262,14 +271,19 @@ if prompt_text or uploaded_files: # Allow submitting with just files or just tex
         st.rerun()
 
     elif uploaded_files and not prompt_text:
-         # Handle case where files are uploaded but no text prompt is given
-         st.warning("Please enter a text prompt along with the images, or click the upload button again after selecting files.")
-         # Note: File uploader state is tricky to clear *without* rerun or button click.
-         # The rerun above handles clearing it after submission. If no submission, it stays.
+         # This case is hit if files are uploaded, but the prompt_text was empty when hitting enter.
+         # We already processed the files and added to display history if successful,
+         # and the user message was added *if* parts_for_gemini wasn't empty.
+         # So here, we just need to potentially nudge the user if they didn't enter text,
+         # but the file content itself serves as a prompt. Let's rethink this logic slightly.
+         # The check `if parts_for_gemini:` before sending covers cases where file processing failed.
+         # The main thing is to ensure the user sees the processed file content.
+         # The display logic `display_message` handles showing the formatted file content.
+         pass # The rest of the block handles adding/displaying if successful
 
 
 # Optional: Add some info at the bottom
 st.markdown("---")
 st.markdown("This app demonstrates multimodal chat capabilities using Google's Gemini 1.5 Flash model.")
-st.markdown("Images uploaded in a turn are sent to the model along with the text prompt for that turn.")
+st.markdown("Images and text files uploaded in a turn are sent to the model along with the text prompt for that turn.")
 st.markdown("Chat history is maintained within the session.")
