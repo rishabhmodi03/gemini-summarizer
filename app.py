@@ -1,5 +1,5 @@
 import streamlit as st
-import google.genai as genai
+import google.generativeai as genai
 from PIL import Image
 import io
 import os
@@ -30,7 +30,7 @@ st.set_page_config(
 # --- Model Configuration ---
 # Use a model that supports multimodal input and stateful chat
 # gemini-1.5-flash-latest is recommended for interleaved text/image history
-MODEL_NAME = "gemini-1.5-flash-latest"
+MODEL_NAME = "gemini-2.5-flash-preview-04-17"
 
 @st.cache_resource
 def get_generative_model():
